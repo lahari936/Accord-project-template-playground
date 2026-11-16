@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_LOGIC_BOILERPLATE,
+  defaultRequestFromModel,
   describeLogicModel,
+  needsDefaultRequest,
   scaffoldFromModel,
   nextLogicSource,
   pendingLogic,
@@ -94,6 +96,79 @@ describe('scaffoldFromModel', () => {
   it('falls back to the generic boilerplate without request/response', () => {
     expect(scaffoldFromModel(describeLogicModel(helloworld.MODEL))).toBe(DEFAULT_LOGIC_BOILERPLATE);
     expect(scaffoldFromModel(null)).toBe(DEFAULT_LOGIC_BOILERPLATE);
+  });
+});
+
+const RUNTIME_REQUEST = JSON.stringify({ $class: 'org.accordproject.runtime@0.2.0.Request' }, null, 2);
+
+describe('defaultRequestFromModel', () => {
+  it('uses the model’s request transaction, filling its required fields', () => {
+    const request = JSON.parse(defaultRequestFromModel(describeLogicModel(latePayment.MODEL))) as {
+      $class: string;
+      forceMajeure: boolean;
+      invoiceValue: number;
+      agreedPayment: string;
+    };
+
+    expect(request.$class).toBe('org.acme.latepayment@1.0.0.LatePaymentRequest');
+    expect(request.forceMajeure).toBe(false);
+    expect(request.invoiceValue).toBe(0);
+    expect(Number.isNaN(Date.parse(request.agreedPayment))).toBe(false);
+  });
+
+  it('leaves optional fields out, fills required arrays and skips types it cannot fill', () => {
+    const model = describeLogicModel(`namespace org.acme.request@1.0.0
+
+concept Detail {
+  o String text
+}
+
+transaction TestRequest {
+  o String[] tags
+  o Detail detail
+  o String note optional
+}
+
+transaction TestResponse {
+  o String outcome
+}`);
+
+    expect(JSON.parse(defaultRequestFromModel(model))).toEqual({
+      $class: 'org.acme.request@1.0.0.TestRequest',
+      tags: [],
+    });
+  });
+
+  it('is the runtime Request when the model declares none, as the boilerplate expects', () => {
+    expect(defaultRequestFromModel(describeLogicModel(helloworld.MODEL))).toBe(RUNTIME_REQUEST);
+    expect(defaultRequestFromModel(null)).toBe(RUNTIME_REQUEST);
+  });
+});
+
+describe('needsDefaultRequest', () => {
+  const model = describeLogicModel(latePayment.MODEL);
+
+  it('replaces an empty request', () => {
+    expect(needsDefaultRequest('', model)).toBe(true);
+    expect(needsDefaultRequest('  \n', model)).toBe(true);
+  });
+
+  it('replaces JSON that is not a request', () => {
+    expect(needsDefaultRequest('{ "increment": 1 }', model)).toBe(true);
+    expect(needsDefaultRequest('{"$class":', model)).toBe(true);
+    expect(needsDefaultRequest('null', model)).toBe(true);
+  });
+
+  it('replaces another model’s request', () => {
+    expect(needsDefaultRequest(JSON.stringify(counter.REQUEST), model)).toBe(true);
+  });
+
+  it('keeps the model’s own request', () => {
+    expect(needsDefaultRequest(JSON.stringify(latePayment.REQUEST), model)).toBe(false);
+  });
+
+  it('keeps the runtime Request, which no model declares', () => {
+    expect(needsDefaultRequest(RUNTIME_REQUEST, model)).toBe(false);
   });
 });
 

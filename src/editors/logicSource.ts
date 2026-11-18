@@ -2,8 +2,9 @@
  * What logic.ts is written against, read from model.cto: the @template
  * concept, the request/response transactions and the state asset. From
  * those, a logic skeleton with the right $class names and fields; the
- * "what to commit on Apply & Compile" rule of the legacy LogicEditor; and
- * the "what Simulate compiles on arrival" rule of the design-v2 flow.
+ * request Simulate sends for it; the "what to commit on Apply & Compile"
+ * rule of the legacy LogicEditor; and the "what Simulate compiles on
+ * arrival" rule of the design-v2 flow.
  */
 import { ModelManager } from "@accordproject/concerto-core";
 
@@ -15,6 +16,7 @@ import { ModelManager } from "@accordproject/concerto-core";
  */
 const RUNTIME_STATE_FQN = "org.accordproject.runtime@0.2.0.State";
 const RUNTIME_RESPONSE_FQN = "org.accordproject.runtime@0.2.0.Response";
+const RUNTIME_REQUEST_FQN = "org.accordproject.runtime@0.2.0.Request";
 
 /** Generic fallback when model.cto declares no request/response transactions. */
 export const DEFAULT_LOGIC_BOILERPLATE = `// Write your contract logic here.
@@ -75,6 +77,8 @@ export interface LogicModel {
   response?: LogicType;
   /** Asset named *State, else the first asset. */
   state?: LogicType;
+  /** Fully qualified name of every declaration, to recognise a request's $class. */
+  classes: string[];
 }
 
 /* Concerto's declaration classes, typed by the methods used here. */
@@ -160,6 +164,7 @@ export const describeLogicModel = (modelCto: string): LogicModel | null => {
       request: request && toType(request),
       response: response && toType(response),
       state: state && toType(state),
+      classes: declarations.map((d) => d.getFullyQualifiedName()),
     };
   } catch {
     return null;
@@ -254,6 +259,66 @@ export default ContractLogic;
  */
 export const nextLogicSource = (editorLogicTs: string, logicTs: string, modelCto: string): string =>
   editorLogicTs.trim() === '' && logicTs.trim() === '' ? scaffoldFromModel(describeLogicModel(modelCto)) : editorLogicTs;
+
+/** JSON stand-in for a required primitive field, as the engine takes them in a request. */
+const JSON_PLACEHOLDER: Record<string, unknown> = {
+  String: "",
+  Integer: 0,
+  Long: 0,
+  Double: 0,
+  Boolean: false,
+};
+
+/** A first value for a required field; undefined when the type cannot be filled sensibly (enums, concepts). */
+const jsonPlaceholder = (field: LogicField): unknown => {
+  if (field.isArray) return [];
+  if (field.type === "DateTime") return new Date().toISOString();
+  return JSON_PLACEHOLDER[field.type];
+};
+
+/**
+ * The request Simulate sends for this model: its request transaction, with
+ * the required fields filled in with first values, or the engine's runtime
+ * Request when the model declares none (what DEFAULT_LOGIC_BOILERPLATE
+ * expects). Built from the same LogicModel as scaffoldFromModel, so the
+ * logic skeleton and the request always agree.
+ */
+export const defaultRequestFromModel = (model: LogicModel | null): string => {
+  const request = model?.request;
+  if (!request) return JSON.stringify({ $class: RUNTIME_REQUEST_FQN }, null, 2);
+
+  const body: Record<string, unknown> = { $class: request.fqn };
+  for (const field of request.fields) {
+    if (field.isOptional) continue;
+    const value = jsonPlaceholder(field);
+    if (value !== undefined) body[field.name] = value;
+  }
+  return JSON.stringify(body, null, 2);
+};
+
+/**
+ * Whether Simulate needs the model's default request in place of this one:
+ * it is empty, is not JSON, or is for a class the model does not declare
+ * (an imported template's request kept from another model, or the Counter
+ * request samples without one used to get). A request the user typed for
+ * this model is kept as it is.
+ */
+export const needsDefaultRequest = (requestJson: string, model: LogicModel | null): boolean => {
+  if (requestJson.trim() === "") return true;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(requestJson);
+  } catch {
+    return true;
+  }
+
+  const className = (parsed as { $class?: unknown } | null)?.$class;
+  if (typeof className !== "string" || className === "") return true;
+  // The generic boilerplate sends the runtime Request, which no model declares.
+  if (className === RUNTIME_REQUEST_FQN) return false;
+  return !(model?.classes ?? []).includes(className);
+};
 
 /**
  * The logic the design-v2 flow compiles before Simulate: whatever is in the
